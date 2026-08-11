@@ -16,6 +16,10 @@ jobs:
   repro:
     runs-on: ubuntu-latest
     timeout-minutes: 300
+    env:
+      # The runner has both docker and podman; kubevirtci auto-detects
+      # podman first, but kind is far more battle-tested with docker.
+      CRI_BIN: docker
     steps:
       - uses: actions/checkout@v4
 
