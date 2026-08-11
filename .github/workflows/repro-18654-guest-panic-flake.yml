@@ -1,0 +1,91 @@
+name: "[throwaway] repro guest-panic-metric flake (#18654)"
+
+# Manual-only diagnostic workflow for investigating
+# https://github.com/kubevirt/kubevirt/issues/18654 on real amd64+KVM
+# hardware. Not part of any contribution; safe to delete after use.
+
+on:
+  workflow_dispatch:
+    inputs:
+      iterations:
+        description: "How many times to run the quarantined test"
+        default: "20"
+        required: false
+
+jobs:
+  repro:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify KVM and vhost-net are available
+        run: |
+          sudo modprobe kvm || true
+          sudo modprobe vhost_net || true
+          ls -la /dev/kvm /dev/vhost-net
+          sudo chmod 666 /dev/kvm /dev/vhost-net
+
+      - name: Bring up kind-1.34 cluster
+        run: |
+          export KUBEVIRT_PROVIDER=kind-1.34
+          make cluster-up
+
+      - name: Install Prometheus Operator (kind provider doesn't wire KUBEVIRT_DEPLOY_PROMETHEUS)
+        run: |
+          KUBECTL=kubevirtci/_ci-configs/kind-1.34/.kubectl
+          KCFG=kubevirtci/_ci-configs/kind-1.34/.kubeconfig
+          $KUBECTL --kubeconfig=$KCFG create namespace monitoring
+          $KUBECTL --kubeconfig=$KCFG apply --server-side -f https://raw.githubusercontent.com/prometheus-operator/prometheus-operator/v0.80.1/bundle.yaml
+          $KUBECTL --kubeconfig=$KCFG -n monitoring create serviceaccount prometheus-k8s
+          $KUBECTL --kubeconfig=$KCFG create clusterrolebinding prometheus-k8s --clusterrole=cluster-admin --serviceaccount=monitoring:prometheus-k8s
+          cat <<'EOF' | $KUBECTL --kubeconfig=$KCFG apply -f -
+          apiVersion: monitoring.coreos.com/v1
+          kind: Prometheus
+          metadata:
+            name: k8s
+            namespace: monitoring
+          spec:
+            serviceAccountName: prometheus-k8s
+            serviceMonitorSelector: {}
+            serviceMonitorNamespaceSelector: {}
+            ruleSelector: {}
+            ruleNamespaceSelector: {}
+            resources:
+              requests:
+                memory: 400Mi
+          EOF
+          $KUBECTL --kubeconfig=$KCFG -n monitoring wait --for=condition=Available deployment/prometheus-operator --timeout=120s || true
+          sleep 20
+          $KUBECTL --kubeconfig=$KCFG -n monitoring get pods
+
+      - name: Build and deploy KubeVirt from this branch
+        run: |
+          export KUBEVIRT_PROVIDER=kind-1.34
+          make cluster-sync
+
+      - name: Loop the quarantined test to try to catch the flake
+        run: |
+          export KUBEVIRT_PROVIDER=kind-1.34
+          export KUBEVIRT_E2E_FOCUS='should increment kubevirt_vmi_guest_os_panic_total'
+          mkdir -p repro-logs
+          fail=0
+          for i in $(seq 1 "${{ github.event.inputs.iterations }}"); do
+            echo "=== Iteration $i ==="
+            if ! make functest 2>&1 | tee "repro-logs/iteration-$i.log"; then
+              echo "Iteration $i FAILED"
+              fail=1
+            fi
+          done
+          if [ "$fail" = "1" ]; then
+            echo "At least one iteration failed - see uploaded artifacts"
+          fi
+
+      - name: Upload logs and artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: repro-logs
+          path: |
+            repro-logs/
+            _out/artifacts/
