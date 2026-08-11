@@ -65,6 +65,27 @@ jobs:
           $KUBECTL --kubeconfig=$KCFG -n monitoring wait --for=condition=Available deployment/prometheus-operator --timeout=120s || true
           sleep 20
           $KUBECTL --kubeconfig=$KCFG -n monitoring get pods
+          # The test does `kubectl port-forward service/prometheus-k8s :9090`
+          # directly (tests/libmonitoring/prometheus.go). The bare
+          # prometheus-operator bundle only creates the StatefulSet/pods,
+          # not this Service - the full kube-prometheus bundle normally
+          # ships it, but we're not using that bundle here.
+          cat <<'EOF' | $KUBECTL --kubeconfig=$KCFG apply -f -
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: prometheus-k8s
+            namespace: monitoring
+          spec:
+            selector:
+              app.kubernetes.io/name: prometheus
+              prometheus: k8s
+            ports:
+              - name: web
+                port: 9090
+                targetPort: 9090
+          EOF
+          $KUBECTL --kubeconfig=$KCFG -n monitoring get svc
 
       - name: Build and deploy KubeVirt from this branch
         run: |
