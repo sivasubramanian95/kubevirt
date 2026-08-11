@@ -25,6 +25,9 @@ jobs:
           sudo modprobe vhost_net || true
           ls -la /dev/kvm /dev/vhost-net
           sudo chmod 666 /dev/kvm /dev/vhost-net
+          # kind's node config bind-mounts this path; podman (auto-detected
+          # on this runner) errors out if the host source doesn't exist.
+          sudo mkdir -p /var/log/audit
 
       - name: Bring up kind-1.34 cluster
         run: |
